@@ -3,6 +3,15 @@
 set -euo pipefail
 [ "$#" -eq 2 ] || { echo "Usage: $0 INPUT_ARCHIVES NEW_WORK_DIR" >&2; exit 2; }
 repo=$(cd "$(dirname "$0")" && pwd -P)
+sign_key=${APK_SIGN_KEY:-}
+unset APK_SIGN_KEY VR_APK_SIGN_KEY
+if [[ -n $sign_key ]]; then
+  sign_key=$(realpath "$sign_key")
+  [[ -f $sign_key ]]
+  openssl pkey -in "$sign_key" -passin pass: -pubout | cmp -s - "$repo/keys/beryl7-release.pem" || {
+    echo "Signing key does not match the project release public key." >&2; exit 1;
+  }
+fi
 inputs=$(realpath "$1"); work=$(realpath -m "$2")
 case "$work/" in "$repo/"*|*' '*) echo 'Use a new path outside this repository, without spaces.' >&2; exit 2;; esac
 (cd "$inputs" && sha256sum -c "$repo/SOURCES.sha256")
@@ -44,6 +53,13 @@ save() {
   cp "${a[0]}" "$work/results/$variant/"
 }
 save mac80211 control; save mt7996e control
+if [[ -n $sign_key ]]; then
+  # APK 3.0.5 signs these APKv3 packages at creation, not by re-signing unsigned archives.
+  grep -Fq "/bin/apk mkpkg" include/package-pack.mk
+  sed -i 's@/bin/apk mkpkg \\@/bin/apk mkpkg $(if $(filter $(1),kmod-mac80211 kmod-mt7996e),--sign-key "$(VR_APK_SIGN_KEY)") \\@' include/package-pack.mk
+  grep -Fq -- '--sign-key "$(VR_APK_SIGN_KEY)"' include/package-pack.mk || exit 1
+  export VR_APK_SIGN_KEY="$sign_key"
+fi
 run clean-mac make NO_DEPS=1 package/kernel/mac80211/clean V=s
 cp "$repo/patches/484-wifi-mac80211-airtime.patch" package/kernel/mac80211/patches/subsys/
 run airtime make -j"$j" NO_DEPS=1 package/kernel/mac80211/compile V=s
@@ -53,5 +69,8 @@ cp "$repo/patches/999-mt7990-tx-rate.patch" package/kernel/mt76/patches/
 run txrate make -j"$j" NO_DEPS=1 package/kernel/mt76/compile V=s
 save mt7996e candidate
 python3 "$repo/verify.py" "$sdk/staging_dir/host/bin/apk" "$work/results"
+if [[ -n $sign_key ]]; then
+  "$sdk/staging_dir/host/bin/apk" --no-network --keys-dir "$repo/keys" verify "$work/results/candidate/"*.apk
+fi
 (cd "$work/results" && sha256sum {control,candidate}/*.apk > SHA256SUMS)
 printf '%s\n' 'Research artifacts only; no installation or signing trust is implied.'

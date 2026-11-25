@@ -41,8 +41,55 @@ python3 verify.py ../work-new/openwrt-sdk-25.12.6-mediatek-filogic_gcc-14.3.0_mu
 
 本表比对 APK 内的实际模块，不要求 APK 容器或签名相同。包元数据和 ELF 静态检查已通过。Beryl 7 实机在 5 GHz / 160 MHz、非 MLO、WED 关闭、默认 BE AQL 5/12 ms 下，以 Virtual Desktop 固定 200 Mbps 对比：仅 484 时 AP 下行约 103 Mbps，短窗口 TX rate 全为 6 Mbps，Networking 约 110 ms；484 + 107 时 AP 下行稳定段约 208 Mbps、驱动速率约 1.44–2.40 Gbps、Networking 约 4 ms，随后实际游戏正常。这只验证了双补丁组合，不证明 107 单独适用于所有客户端。
 
+## 下载与安装签名包
+
+**仅适用 GL.iNet Beryl 7（GL-MT3600BE）、官方 OpenWrt 25.12.6 `mediatek/filogic`、`aarch64_cortex-a53`、内核依赖 `6.12.112~f0a7348f9cb959e1bf4d0447669b031e-r1`。** 不要给其他机型、其他发行版或其他内核 ABI 安装。安装前保留有线管理，确认已备份配置和同版本官方两个模块包及签名仓库索引，先结束串流。不要卸载正在运行的 Wi-Fi 模块来切换。
+
+1. 从本仓库 Releases 或默认分支成功的手动 Actions 构建下载两个**已签名**的 APK、`SHA256SUMS` 和项目公钥 `beryl7-release.pem`。常规 CI 的 `unsigned-kmods` 不用于安装。项目不是 OpenWrt 官方发布。
+2. **通过独立可信渠道核对公钥指纹**。下面的指纹是公钥 SPKI DER 的 SHA256，不是 PEM 文本的 SHA256。在安装电脑上执行：
+
+   ```sh
+   openssl pkey -pubin -in beryl7-release.pem -outform DER | sha256sum
+   ```
+
+   项目公钥指纹：`ac1e66171d5e201336739c1761c3585f1666075ecd11fe051d6a75e381f787aa`。
+
+3. 把上述四个文件传到路由器的专用临时目录（示例为 `/tmp/beryl7-install`），登录路由器，核对机型、系统和 ABI：
+
+   ```sh
+   cat /tmp/sysinfo/board_name
+   cat /etc/openwrt_release
+   uname -r
+   apk --no-network --repositories-file /dev/null list --installed kernel
+   ```
+
+4. 先验签和模拟；只有命令成功且模拟仅替换这两个包，才执行安装及重启（所有 Wi-Fi 都会临时断开）。`--force-reinstall` 只用于替换与官方同版本号的包，不跳过签名或依赖检查。
+
+   ```sh
+   cd /tmp/beryl7-install
+   sha256sum -c SHA256SUMS
+   mkdir -p keys
+   cp beryl7-release.pem keys/
+   set -- ./kmod-mac80211-*.apk ./kmod-mt7996e-*.apk
+   apk --no-network --keys-dir "$PWD/keys" verify "$@"
+   apk --no-network --keys-dir "$PWD/keys" --repositories-file /dev/null \
+       add --simulate --force-reinstall "$@"
+   ```
+
+   ```sh
+   # 确认上面的模拟结果后，在同一 shell 执行：
+   apk --no-network --keys-dir "$PWD/keys" --repositories-file /dev/null \
+       add --force-reinstall "$@" && reboot
+   ```
+
+公钥只用于这次 APK 命令，不需要永久加入 `/etc/apk/keys`。不要用 `--allow-untrusted` 或 `--force-broken-world` 绕过错误。重启后确认三个 BSS、5 GHz 频道和串流表现。保留默认 AQL；本修复不要求 WED，也不自动改变任何路由器配置。
+
+### 回到官方版本
+
+使用预先下载并验签的 **25.12.6 / 同内核 ABI** 官方仓库索引与对应两个官方 APK。由于版本号相同，必须用官方仓库索引里的包身份（`name><Q1…`）定向选择，不能只用包名重装。官方索引可通过系统自带 OpenWrt 公钥验签。先用 `apk add --simulate --force-reinstall` 核实只替换两包，再执行并重启。升级固件前先恢复官方包、解除旧 ABI 的本地固定，升级后按新版本重新核对。
+
 ## GitHub Actions
 
-`Build OpenWrt 25.12.6 kmods` 在推送、Pull Request 和手动触发时使用固定 SDK 与源码哈希，执行同一个 `build.sh`。通过对照和候选检查之后，才上传 `beryl7-openwrt-25.12.6-kmods` artifact，内含两个候选 APK 和 `SHA256SUMS`，不上传对照包、构建目录、密钥或设备数据。**CI 不签名、不部署，也不是 APK 软件源。**
+推送和 Pull Request 只运行无密钥的构建验证；在默认分支手动运行 `Build OpenWrt 25.12.6 kmods` 则生成 `beryl7-openwrt-25.12.6-signed-kmods`，含两个签名 APK、公钥和 `SHA256SUMS`。在上传前，构建会比较原版对照并验证两包签名、依赖和模块接口。工作流不部署路由器。
 
-正式上机时，使用独立可信签名流程为这两个 APK 签名，并用临时公钥目录执行签名校验和 APK 安装模拟。安装前应备好同版本的官方模块包及其签名仓库索引；因版本号相同，回退时必须用官方仓库索引中的包身份定向选择，不要仅运行同名包重装命令。不要关闭签名或内核 ABI 检查。升级固件前应恢复官方模块并移除旧版本的本地包固定，再针对新版本重建或确认上游已含修复。
+维护者应将项目签名私钥配置为受限环境 `release-signing` 的 **环境 Secret** `BERYL7_RELEASE_PRIVATE_PEM`，环境仅允许默认分支。不要把私钥复制进仓库、日志或 artifact。离线流程使用同一个 `build.sh`：传入 `APK_SIGN_KEY` 指向受保护的、临时解密的 PEM 文件；脚本先核对它与已提交公钥匹配，再为候选包签名。不要把加密私钥的解锁凭据和备份存一起。
