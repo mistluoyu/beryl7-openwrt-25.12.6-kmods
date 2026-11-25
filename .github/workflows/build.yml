@@ -1,0 +1,66 @@
+name: Build OpenWrt 25.12.6 kmods
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set work paths
+        run: |
+          printf 'INPUTS=%s/openwrt-inputs\nBUILD=%s/openwrt-build\nARTIFACT=%s/openwrt-artifact\n' \
+            "$RUNNER_TEMP" "$RUNNER_TEMP" "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Install SDK prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl file flex gawk gettext git libncurses-dev \
+            libssl-dev patch perl python3 python3-setuptools rsync unzip wget zlib1g-dev zstd
+
+      - name: Fetch pinned build inputs
+        run: |
+          mkdir "$INPUTS"
+          while read -r _ file; do
+            case "$file" in
+              openwrt-sdk-*) url="https://downloads.openwrt.org/releases/25.12.6/targets/mediatek/filogic/$file" ;;
+              openwrt-*.tar.gz) url="https://codeload.github.com/openwrt/openwrt/tar.gz/${file:8:40}" ;;
+              *) url="https://sources.openwrt.org/$file" ;;
+            esac
+            curl --fail --location --silent --show-error --retry 4 --connect-timeout 20 \
+              --output "$INPUTS/$file" "$url"
+          done < SOURCES.sha256
+
+      - name: Build and verify both kmods against the stock control
+        run: JOBS="$(nproc)" ./build.sh "$INPUTS" "$BUILD"
+
+      - name: Stage only the two verified candidate packages
+        run: |
+          mkdir "$ARTIFACT"
+          for name in kmod-mac80211 kmod-mt7996e; do
+            packages=("$BUILD/results/candidate/$name"-[0-9]*.apk)
+            [[ ${#packages[@]} == 1 && -f ${packages[0]} ]]
+            cp "${packages[0]}" "$ARTIFACT/"
+          done
+          (cd "$ARTIFACT" && sha256sum ./*.apk > SHA256SUMS)
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: beryl7-openwrt-25.12.6-kmods
+          path: ${{ env.ARTIFACT }}/
+          if-no-files-found: error
+          retention-days: 14

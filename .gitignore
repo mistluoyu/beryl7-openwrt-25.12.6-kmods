@@ -1,0 +1,16 @@
+# Share sources only. Archives, local build trees, configs, keys and logs are never inputs to Git.
+/*
+!/.gitignore
+!/README.md
+!/SOURCES.sha256
+!/build.sh
+!/verify.py
+!/patches/
+/patches/*
+!/patches/999-mt7990-tx-rate.patch
+!/patches/484-wifi-mac80211-airtime.patch
+!/.github/
+/.github/*
+!/.github/workflows/
+/.github/workflows/*
+!/.github/workflows/build.yml
